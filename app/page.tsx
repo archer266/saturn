@@ -2,7 +2,9 @@
 
 import {
   BrainCircuit,
+  CalendarDays,
   Check,
+  Clock3,
   CloudFog,
   CloudLightning,
   CloudRain,
@@ -17,17 +19,29 @@ import {
   Search,
   Snowflake,
   Sparkles,
-  Sun,
   TimerReset,
   Trash2,
   Wind,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type Task = {
   id: string;
@@ -98,6 +112,8 @@ const MOODS = [
   { emoji: "😮‍💨", label: "Tired" },
 ];
 
+const HOURS = Array.from({ length: 12 }, (_, index) => String(index + 1));
+const MINUTES = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, "0"));
 const FOCUS_SECONDS = 25 * 60;
 const BREATH_SECONDS = 60;
 const BREATH_PHASES = ["Inhale", "Hold", "Exhale", "Rest"];
@@ -112,6 +128,43 @@ function formatTimer(seconds: number) {
   return `${minutes}:${remainder.toString().padStart(2, "0")}`;
 }
 
+function to24Hour(hour: string, minute: string, period: string) {
+  const numericHour = Number(hour) % 12 + (period === "PM" ? 12 : 0);
+  return `${String(numericHour).padStart(2, "0")}:${minute}`;
+}
+
+function normalizeTaskTime(value: string) {
+  const cleaned = value.trim();
+  if (!cleaned) return "";
+
+  const twentyFourHour = cleaned.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (twentyFourHour) return cleaned;
+
+  const twelveHour = cleaned.match(/^(1[0-2]|[1-9]):([0-5]\d)\s*([AP]M)$/i);
+  if (!twelveHour) return "";
+  return to24Hour(twelveHour[1], twelveHour[2], twelveHour[3].toUpperCase());
+}
+
+function formatTaskTime(value: string) {
+  const normalized = normalizeTaskTime(value);
+  if (!normalized) return "Anytime";
+  const [hour, minute] = normalized.split(":").map(Number);
+  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function sortTasks(items: Task[]) {
+  return [...items].sort((a, b) => {
+    if (!a.time && !b.time) return 0;
+    if (!a.time) return 1;
+    if (!b.time) return -1;
+    return a.time.localeCompare(b.time);
+  });
+}
+
 function getWeatherLabel(code: number) {
   if (code === 0) return "Clear skies";
   if (code <= 3) return "Partly cloudy";
@@ -123,7 +176,7 @@ function getWeatherLabel(code: number) {
 }
 
 function WeatherIcon({ code, className = "" }: { code: number; className?: string }) {
-  if (code === 0) return <Sun className={className} aria-hidden="true" />;
+  if (code === 0) return <CloudSun className={className} aria-hidden="true" />;
   if (code <= 3) return <CloudSun className={className} aria-hidden="true" />;
   if (code <= 48) return <CloudFog className={className} aria-hidden="true" />;
   if (code <= 67 || (code >= 80 && code <= 82)) {
@@ -150,13 +203,15 @@ async function requestFortune(question: string): Promise<Fortune> {
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>(DEFAULT_TASKS);
   const [taskTitle, setTaskTitle] = useState("");
-  const [taskTime, setTaskTime] = useState("09:00");
+  const [taskHour, setTaskHour] = useState("9");
+  const [taskMinute, setTaskMinute] = useState("00");
+  const [taskPeriod, setTaskPeriod] = useState("AM");
   const [hydrated, setHydrated] = useState(false);
   const [mood, setMood] = useState("");
 
   const [city, setCity] = useState("");
   const [weather, setWeather] = useState<Weather | null>(null);
-  const [weatherStatus, setWeatherStatus] = useState("Use location or search a city.");
+  const [weatherStatus, setWeatherStatus] = useState("Use your location or search a city.");
   const [weatherLoading, setWeatherLoading] = useState(false);
 
   const [focusSeconds, setFocusSeconds] = useState(FOCUS_SECONDS);
@@ -171,30 +226,45 @@ export default function Home() {
   const [asking, setAsking] = useState(false);
 
   const [dateLabel, setDateLabel] = useState("Today");
+  const [clockLabel, setClockLabel] = useState("--:-- --");
   const [greeting, setGreeting] = useState("Welcome back");
 
   useEffect(() => {
-    const now = new Date();
-    setDateLabel(
-      now.toLocaleDateString(undefined, {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-      }),
-    );
-    const hour = now.getHours();
-    setGreeting(hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening");
+    const updateDateAndTime = () => {
+      const now = new Date();
+      setDateLabel(
+        now.toLocaleDateString(undefined, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        }),
+      );
+      setClockLabel(
+        now.toLocaleTimeString(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        }),
+      );
+      const hour = now.getHours();
+      setGreeting(hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening");
+    };
+
+    updateDateAndTime();
+    const clockInterval = window.setInterval(updateDateAndTime, 30_000);
 
     try {
       const savedTasks = localStorage.getItem("saturn.tasks");
       const savedMood = localStorage.getItem("saturn.mood");
-      if (savedTasks) setTasks(JSON.parse(savedTasks) as Task[]);
+      if (savedTasks) setTasks(sortTasks(JSON.parse(savedTasks) as Task[]));
       if (savedMood) setMood(savedMood);
     } catch {
       // The starter plan remains available if browser storage is unavailable.
     } finally {
       setHydrated(true);
     }
+
+    return () => window.clearInterval(clockInterval);
   }, []);
 
   useEffect(() => {
@@ -342,16 +412,17 @@ export default function Home() {
     const task: Task = {
       id: makeId(),
       title: cleaned.slice(0, 100),
-      time,
+      time: normalizeTaskTime(time),
       completed: false,
     };
-    setTasks((current) => [...current, task].sort((a, b) => a.time.localeCompare(b.time)));
+    setTasks((current) => sortTasks([...current, task]));
     return task;
   }, []);
 
   const submitTask = (event: FormEvent) => {
     event.preventDefault();
-    if (!addTask(taskTitle, taskTime)) return;
+    const time = to24Hour(taskHour, taskMinute, taskPeriod);
+    if (!addTask(taskTitle, time)) return;
     setTaskTitle("");
   };
 
@@ -394,9 +465,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const modelContext = (
-      document as Document & { modelContext?: ModelContextLike }
-    ).modelContext;
+    const modelContext = (document as Document & { modelContext?: ModelContextLike }).modelContext;
     if (!modelContext?.registerTool) return;
 
     const lifecycle = new AbortController();
@@ -410,7 +479,11 @@ export default function Home() {
             type: "object",
             properties: {
               title: { type: "string", minLength: 1, maxLength: 100 },
-              time: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+              time: {
+                type: "string",
+                description: "Optional time in 12-hour format, such as 9:30 AM.",
+                pattern: "^(1[0-2]|[1-9]):[0-5][0-9] ?([AaPp][Mm])$",
+              },
             },
             required: ["title"],
             additionalProperties: false,
@@ -421,10 +494,17 @@ export default function Home() {
             if (typeof candidate.title !== "string" || !candidate.title.trim()) {
               throw new Error("title is required");
             }
-            const time = typeof candidate.time === "string" ? candidate.time : "";
-            const task = addTask(candidate.title, time);
+            const requestedTime = typeof candidate.time === "string" ? candidate.time : "";
+            const normalizedTime = normalizeTaskTime(requestedTime);
+            if (requestedTime && !normalizedTime) throw new Error("Use a time like 9:30 AM");
+            const task = addTask(candidate.title, normalizedTime);
             if (!task) throw new Error("Could not add that plan item");
-            return { id: task.id, title: task.title, time: task.time, status: "added" };
+            return {
+              id: task.id,
+              title: task.title,
+              time: formatTaskTime(task.time),
+              status: "added",
+            };
           },
         },
         { signal: lifecycle.signal },
@@ -460,334 +540,335 @@ export default function Home() {
   }, [addTask, askSaturn]);
 
   const completedTasks = tasks.filter((task) => task.completed).length;
-  const planProgress = tasks.length ? (completedTasks / tasks.length) * 100 : 0;
   const focusProgress = ((FOCUS_SECONDS - focusSeconds) / FOCUS_SECONDS) * 100;
   const breathElapsed = BREATH_SECONDS - breathRemaining;
   const breathPhase = BREATH_PHASES[Math.floor((breathElapsed % 16) / 4)];
   const selectedMood = MOODS.find((item) => item.label === mood);
 
   const planSummary = useMemo(() => {
-    if (!tasks.length) return "A clear orbit. Add what matters today.";
+    if (!tasks.length) return "Your day is open. Add one thing that matters.";
     if (completedTasks === tasks.length) return "Everything is complete. Let the day feel lighter.";
-    return `${tasks.length - completedTasks} item${tasks.length - completedTasks === 1 ? "" : "s"} left in today’s orbit.`;
+    return `${tasks.length - completedTasks} item${tasks.length - completedTasks === 1 ? "" : "s"} left today.`;
   }, [completedTasks, tasks.length]);
 
   return (
     <main className="saturn-app">
-      <header className="topbar">
-        <a className="brand" href="#today" aria-label="Saturn home">
-          <span className="brand-mark"><Orbit aria-hidden="true" /></span>
-          <span>SATURN</span>
-        </a>
-        <nav className="topnav" aria-label="Saturn sections">
-          <a href="#today">Today</a>
-          <a href="#reset">Reset</a>
-          <a href="#ask-saturn">Ask Saturn</a>
-        </nav>
-        <div className="mood-chip" aria-label={mood ? `Current mood: ${mood}` : "No mood selected"}>
-          <span>{selectedMood?.emoji ?? "✦"}</span>
-          <span>{mood || "Check in"}</span>
-        </div>
-      </header>
+      <div className="app-shell">
+        <section className="main-stage">
+          <header className="page-header">
+            <div>
+              <p className="eyebrow">Your space for today</p>
+              <h1>{greeting}</h1>
+              <p className="header-note">Make room for progress and a little calm.</p>
+            </div>
+            <div className="header-status">
+              <div className="date-pill"><CalendarDays aria-hidden="true" /><span>{dateLabel}</span></div>
+              <a className="mood-pill" href="#mood-check">
+                <span>{selectedMood?.emoji ?? "✦"}</span>
+                <span>{mood || "Check in"}</span>
+              </a>
+            </div>
+          </header>
 
-      <div className="dashboard-shell">
-        <section className="welcome-row" aria-labelledby="welcome-heading">
-          <div>
-            <p className="eyebrow">{dateLabel}</p>
-            <h1 id="welcome-heading">{greeting}. Make space for what matters.</h1>
-          </div>
-          <div className="day-progress" aria-label={`${completedTasks} of ${tasks.length} plan items complete`}>
-            <span>{completedTasks}/{tasks.length || 0} complete</span>
-            <Progress value={planProgress} className="day-progress-bar" />
-          </div>
-        </section>
-
-        <div className="primary-grid">
-          <section className="panel planner-panel" id="today" aria-labelledby="planner-heading">
-            <div className="panel-heading planner-heading">
-              <div>
-                <p className="eyebrow">Daily orbit</p>
-                <h2 id="planner-heading">Today’s plan</h2>
-                <p>{planSummary}</p>
+          <div className="overview-grid">
+            <section className="surface planner-surface" id="today" aria-labelledby="planner-heading">
+              <div className="surface-heading planner-heading">
+                <div>
+                  <p className="section-kicker">Daily plan</p>
+                  <h2 id="planner-heading">Today’s orbit</h2>
+                  <p>{planSummary}</p>
+                </div>
+                <span className="task-count">{tasks.length} planned</span>
               </div>
-              <span className="count-badge">{tasks.length} planned</span>
+
+              <form className="task-composer" onSubmit={submitTask}>
+                <label className="sr-only" htmlFor="task-title">New plan item</label>
+                <Input
+                  id="task-title"
+                  value={taskTitle}
+                  onChange={(event) => setTaskTitle(event.target.value)}
+                  placeholder="What would make today feel successful?"
+                  maxLength={100}
+                  className="saturn-input task-title-input"
+                />
+
+                <div className="time-picker" role="group" aria-label="Task time">
+                  <span className="time-picker-icon"><Clock3 aria-hidden="true" /></span>
+                  <Select value={taskHour} onValueChange={(value) => value && setTaskHour(value)}>
+                    <SelectTrigger className="time-select" aria-label="Hour"><SelectValue /></SelectTrigger>
+                    <SelectContent className="saturn-select-menu">
+                      {HOURS.map((hour) => <SelectItem key={hour} value={hour}>{hour}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <span className="time-colon">:</span>
+                  <Select value={taskMinute} onValueChange={(value) => value && setTaskMinute(value)}>
+                    <SelectTrigger className="time-select minute-select" aria-label="Minute"><SelectValue /></SelectTrigger>
+                    <SelectContent className="saturn-select-menu">
+                      {MINUTES.map((minute) => <SelectItem key={minute} value={minute}>{minute}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={taskPeriod} onValueChange={(value) => value && setTaskPeriod(value)}>
+                    <SelectTrigger className="time-select period-select" aria-label="AM or PM"><SelectValue /></SelectTrigger>
+                    <SelectContent className="saturn-select-menu">
+                      <SelectItem value="AM">AM</SelectItem>
+                      <SelectItem value="PM">PM</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Button type="submit" className="primary-button" disabled={!taskTitle.trim()}>
+                  <Plus aria-hidden="true" />
+                  Add task
+                </Button>
+              </form>
+
+              <div className="list-meta">
+                <span>Schedule</span>
+                <span>{completedTasks}/{tasks.length} complete</span>
+              </div>
+
+              <div className="task-list" aria-live="polite">
+                {tasks.length === 0 ? (
+                  <div className="empty-plan">
+                    <span><Check aria-hidden="true" /></span>
+                    <h3>Nothing scheduled yet</h3>
+                    <p>Add one small task to begin your day.</p>
+                  </div>
+                ) : (
+                  tasks.map((task) => (
+                    <article className={`task-row${task.completed ? " task-complete" : ""}`} key={task.id}>
+                      <Checkbox
+                        id={`task-${task.id}`}
+                        checked={task.completed}
+                        onCheckedChange={() => toggleTask(task.id)}
+                        className="task-checkbox"
+                      />
+                      <label htmlFor={`task-${task.id}`} className="task-copy">
+                        <span>{task.title}</span>
+                        <small>{task.completed ? "Completed" : "Ready when you are"}</small>
+                      </label>
+                      <time dateTime={task.time || undefined}>{formatTaskTime(task.time)}</time>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="task-delete"
+                        onClick={() => removeTask(task.id)}
+                        aria-label={`Remove ${task.title}`}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <aside className="dashboard-rail" aria-label="Weather and mood">
+              <section className="surface weather-surface" aria-labelledby="weather-heading">
+                <div className="surface-heading compact-heading">
+                  <div>
+                    <p className="section-kicker">Outside now</p>
+                    <h2 id="weather-heading">Weather</h2>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="location-button"
+                    onClick={useMyLocation}
+                    disabled={weatherLoading}
+                  >
+                    <LocateFixed aria-hidden="true" />
+                    <span>Use location</span>
+                  </Button>
+                </div>
+
+                {weather ? (
+                  <div className="weather-reading">
+                    <div className="weather-hero">
+                      <WeatherIcon code={weather.code} className="weather-icon" />
+                      <div>
+                        <strong>{weather.temperature}°</strong>
+                        <span>{getWeatherLabel(weather.code)}</span>
+                      </div>
+                    </div>
+                    <p className="weather-place"><MapPin aria-hidden="true" /> {weather.location}</p>
+                    <div className="weather-metrics">
+                      <div><span>High / Low</span><strong>{weather.high}° / {weather.low}°</strong></div>
+                      <div><span>Rain</span><strong>{weather.precipitation}%</strong></div>
+                      <div><span>Wind</span><strong>{weather.wind} mph</strong></div>
+                    </div>
+                    <p className="feels-like">Feels like {weather.apparent}°</p>
+                  </div>
+                ) : (
+                  <div className="weather-placeholder">
+                    <span><CloudSun aria-hidden="true" /></span>
+                    <p>{weatherStatus}</p>
+                  </div>
+                )}
+
+                <form className="city-search" onSubmit={searchWeather}>
+                  <label className="sr-only" htmlFor="city">Search city</label>
+                  <Input
+                    id="city"
+                    value={city}
+                    onChange={(event) => setCity(event.target.value)}
+                    placeholder="Search a city"
+                    className="saturn-input"
+                  />
+                  <Button
+                    type="submit"
+                    size="icon"
+                    className="search-button"
+                    aria-label="Search weather"
+                    disabled={weatherLoading || !city.trim()}
+                  >
+                    {weatherLoading ? <RefreshCw className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />}
+                  </Button>
+                </form>
+                {weather && weatherStatus ? <p className="inline-status">{weatherStatus}</p> : null}
+              </section>
+
+              <section className="surface mood-surface" id="mood-check" aria-labelledby="mood-heading">
+                <div className="surface-heading compact-heading">
+                  <div>
+                    <p className="section-kicker">Quick check-in</p>
+                    <h2 id="mood-heading">How are you?</h2>
+                  </div>
+                  <span className="mood-current">{selectedMood?.emoji ?? "✦"}</span>
+                </div>
+                <div className="mood-options" role="group" aria-label="Choose your mood">
+                  {MOODS.map((item) => (
+                    <button
+                      type="button"
+                      key={item.label}
+                      className={`mood-option${mood === item.label ? " selected" : ""}`}
+                      onClick={() => setMood(item.label)}
+                      aria-pressed={mood === item.label}
+                    >
+                      <span>{item.emoji}</span>
+                      <small>{item.label}</small>
+                    </button>
+                  ))}
+                </div>
+                <p className="mood-note">
+                  {mood ? `You’re feeling ${mood.toLowerCase()}. Thanks for checking in.` : "No fixing—just notice where you are."}
+                </p>
+              </section>
+            </aside>
+          </div>
+
+          <section className="reset-section" id="reset" aria-labelledby="reset-heading">
+            <div className="section-heading">
+              <div>
+                <p className="section-kicker">Reset tools</p>
+                <h2 id="reset-heading">Pause without losing momentum.</h2>
+              </div>
+              <p>Choose what you need right now.</p>
             </div>
 
-            <form className="task-form" onSubmit={submitTask}>
-              <label className="sr-only" htmlFor="task-title">New plan item</label>
-              <Input
-                id="task-title"
-                value={taskTitle}
-                onChange={(event) => setTaskTitle(event.target.value)}
-                placeholder="Add something to your day…"
-                maxLength={100}
-                className="saturn-input task-title-input"
-              />
-              <label className="sr-only" htmlFor="task-time">Time</label>
-              <Input
-                id="task-time"
-                type="time"
-                value={taskTime}
-                onChange={(event) => setTaskTime(event.target.value)}
-                className="saturn-input time-input"
-              />
-              <Button type="submit" className="gold-button" disabled={!taskTitle.trim()}>
-                <Plus aria-hidden="true" />
-                Add
-              </Button>
-            </form>
-
-            <div className="task-list" aria-live="polite">
-              {tasks.length === 0 ? (
-                <div className="empty-plan">
-                  <Check aria-hidden="true" />
-                  <p>Your day is open. Add one small thing worth doing.</p>
+            <div className="reset-grid">
+              <article className="surface tool-card focus-card">
+                <div className="tool-card-heading">
+                  <span className="tool-icon coral"><TimerReset aria-hidden="true" /></span>
+                  <div><small>25-minute session</small><h3>Focus timer</h3></div>
                 </div>
-              ) : (
-                tasks.map((task) => (
-                  <div className={`task-row${task.completed ? " task-complete" : ""}`} key={task.id}>
-                    <Checkbox
-                      id={`task-${task.id}`}
-                      checked={task.completed}
-                      onCheckedChange={() => toggleTask(task.id)}
-                      className="task-checkbox"
-                    />
-                    <label htmlFor={`task-${task.id}`} className="task-copy">
-                      <span>{task.title}</span>
-                      <small>{task.completed ? "Complete" : "Ready when you are"}</small>
-                    </label>
-                    <time>{task.time || "Anytime"}</time>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      className="task-delete"
-                      onClick={() => removeTask(task.id)}
-                      aria-label={`Remove ${task.title}`}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </Button>
+                <div className="focus-time">{formatTimer(focusSeconds)}</div>
+                <Progress value={focusProgress} className="focus-progress" />
+                <div className="tool-actions">
+                  <Button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => setFocusRunning((current) => !current)}
+                    disabled={focusSeconds === 0}
+                  >
+                    {focusRunning ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+                    {focusSeconds === 0
+                      ? "Complete"
+                      : focusRunning
+                        ? "Pause"
+                        : focusSeconds === FOCUS_SECONDS
+                          ? "Start focus"
+                          : "Resume"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="icon-button"
+                    onClick={() => {
+                      setFocusRunning(false);
+                      setFocusSeconds(FOCUS_SECONDS);
+                    }}
+                    aria-label="Reset focus timer"
+                  >
+                    <RefreshCw aria-hidden="true" />
+                  </Button>
+                </div>
+              </article>
+
+              <article className="surface tool-card breathing-card">
+                <div className="tool-card-heading">
+                  <span className="tool-icon mint"><Wind aria-hidden="true" /></span>
+                  <div><small>60-second reset</small><h3>Box breathing</h3></div>
+                </div>
+                <div className={`breath-visual ${breathing ? breathPhase.toLowerCase() : "idle"}`}>
+                  <span className="breath-ring" aria-hidden="true" />
+                  <span className="breath-core" aria-hidden="true" />
+                  <strong>{breathing ? breathPhase : "Ready"}</strong>
+                  <small>{breathing ? `${breathRemaining} seconds` : "4 · 4 · 4 · 4"}</small>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="secondary-button"
+                  onClick={() => setBreathing((current) => !current)}
+                >
+                  {breathing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+                  {breathing ? "Pause" : breathRemaining < BREATH_SECONDS ? "Continue" : "Begin breathing"}
+                </Button>
+              </article>
+
+              <article className="surface tool-card fortune-card" id="ask-saturn">
+                <div className="tool-card-heading fortune-heading">
+                  <span className="tool-icon violet"><BrainCircuit aria-hidden="true" /></span>
+                  <div><small>Positive Magic 8 Ball</small><h3>Ask Saturn</h3></div>
+                  <span className="ai-chip"><Sparkles aria-hidden="true" /> AI-ready</span>
+                </div>
+
+                <div className="fortune-window" aria-live="polite">
+                  <span className="fortune-orbit"><Orbit aria-hidden="true" /></span>
+                  <div>
+                    <p>{asking ? "Reading the rings…" : fortune?.message ?? "Ask what’s on your mind. Saturn will answer with an encouraging next step."}</p>
+                    {fortune ? <small>{fortune.source === "ai" ? "AI-generated encouragement" : "Built-in encouragement"}</small> : null}
                   </div>
-                ))
-              )}
+                </div>
+
+                <form className="fortune-form" onSubmit={submitQuestion}>
+                  <label className="sr-only" htmlFor="saturn-question">Ask Saturn a question</label>
+                  <Input
+                    id="saturn-question"
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    placeholder="Will I make progress today?"
+                    maxLength={240}
+                    className="saturn-input"
+                  />
+                  <Button type="submit" className="violet-button" disabled={asking || !question.trim()}>
+                    <Sparkles aria-hidden="true" />
+                    Ask
+                  </Button>
+                </form>
+                {fortuneError ? <p className="form-error" role="alert">{fortuneError}</p> : null}
+              </article>
             </div>
           </section>
 
-          <aside className="side-stack" aria-label="Weather and mood">
-            <section className="panel weather-panel" aria-labelledby="weather-heading">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <p className="eyebrow">Outside now</p>
-                  <h2 id="weather-heading">Weather</h2>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="soft-icon-button"
-                  onClick={useMyLocation}
-                  aria-label="Use my current location"
-                  disabled={weatherLoading}
-                >
-                  <LocateFixed aria-hidden="true" />
-                </Button>
-              </div>
-
-              {weather ? (
-                <div className="weather-reading">
-                  <div className="weather-main">
-                    <WeatherIcon code={weather.code} className="weather-icon" />
-                    <div>
-                      <strong>{weather.temperature}°</strong>
-                      <span>{getWeatherLabel(weather.code)}</span>
-                    </div>
-                  </div>
-                  <p className="weather-place"><MapPin aria-hidden="true" /> {weather.location}</p>
-                  <div className="weather-details">
-                    <span>H {weather.high}° / L {weather.low}°</span>
-                    <span><CloudRain aria-hidden="true" /> {weather.precipitation}%</span>
-                    <span><Wind aria-hidden="true" /> {weather.wind} mph</span>
-                  </div>
-                  <p className="feels-like">Feels like {weather.apparent}°</p>
-                </div>
-              ) : (
-                <div className="weather-placeholder">
-                  <CloudSun aria-hidden="true" />
-                  <p>{weatherStatus}</p>
-                </div>
-              )}
-
-              <form className="city-search" onSubmit={searchWeather}>
-                <label className="sr-only" htmlFor="city">Search city</label>
-                <Input
-                  id="city"
-                  value={city}
-                  onChange={(event) => setCity(event.target.value)}
-                  placeholder="Search a city"
-                  className="saturn-input"
-                />
-                <Button
-                  type="submit"
-                  size="icon"
-                  variant="secondary"
-                  className="search-button"
-                  aria-label="Search weather"
-                  disabled={weatherLoading || !city.trim()}
-                >
-                  {weatherLoading ? <RefreshCw className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />}
-                </Button>
-              </form>
-              {weather && weatherStatus ? <p className="inline-status">{weatherStatus}</p> : null}
-            </section>
-
-            <section className="panel mood-panel" aria-labelledby="mood-heading">
-              <div className="panel-heading compact-heading">
-                <div>
-                  <p className="eyebrow">One honest moment</p>
-                  <h2 id="mood-heading">How are you?</h2>
-                </div>
-              </div>
-              <div className="mood-options" role="group" aria-label="Choose your mood">
-                {MOODS.map((item) => (
-                  <button
-                    type="button"
-                    key={item.label}
-                    className={`mood-option${mood === item.label ? " selected" : ""}`}
-                    onClick={() => setMood(item.label)}
-                    aria-pressed={mood === item.label}
-                    title={item.label}
-                  >
-                    <span>{item.emoji}</span>
-                    <small>{item.label}</small>
-                  </button>
-                ))}
-              </div>
-              <p className="mood-note">
-                {mood ? `Noted: you’re feeling ${mood.toLowerCase()}.` : "No fixing. Just notice where you are."}
-              </p>
-            </section>
-          </aside>
-        </div>
-
-        <section className="wellness-section" id="reset" aria-labelledby="reset-heading">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Reset station</p>
-              <h2 id="reset-heading">Slow down, then move forward.</h2>
-            </div>
-            <p>Pick one. A small reset still counts.</p>
-          </div>
-
-          <div className="wellness-grid">
-            <article className="panel reset-card breathing-card">
-              <div className="card-icon mint"><Wind aria-hidden="true" /></div>
-              <div>
-                <p className="eyebrow">60-second reset</p>
-                <h3>Box breathing</h3>
-              </div>
-              <div className={`breath-visual ${breathing ? breathPhase.toLowerCase() : "idle"}`}>
-                <span className="breath-orb" aria-hidden="true" />
-                <strong aria-live="polite">{breathing ? breathPhase : "Ready"}</strong>
-                <small>{breathing ? `${breathRemaining}s` : "4 · 4 · 4 · 4"}</small>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="panel-button"
-                onClick={() => {
-                  setBreathing((current) => !current);
-                  if (!breathing && breathRemaining === BREATH_SECONDS) setBreathRemaining(BREATH_SECONDS);
-                }}
-              >
-                {breathing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-                {breathing ? "Pause" : breathRemaining < BREATH_SECONDS ? "Continue" : "Begin breathing"}
-              </Button>
-            </article>
-
-            <article className="panel reset-card focus-card">
-              <div className="card-icon peach"><TimerReset aria-hidden="true" /></div>
-              <div>
-                <p className="eyebrow">Quiet momentum</p>
-                <h3>Focus timer</h3>
-              </div>
-              <div className="focus-time" aria-live="polite">{formatTimer(focusSeconds)}</div>
-              <Progress value={focusProgress} className="focus-progress" />
-              <div className="timer-actions">
-                <Button
-                  type="button"
-                  className="gold-button"
-                  onClick={() => setFocusRunning((current) => !current)}
-                  disabled={focusSeconds === 0}
-                >
-                  {focusRunning ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-                  {focusSeconds === 0
-                    ? "Complete"
-                    : focusRunning
-                      ? "Pause"
-                      : focusSeconds === FOCUS_SECONDS
-                        ? "Start focus"
-                        : "Resume"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="soft-icon-button"
-                  onClick={() => {
-                    setFocusRunning(false);
-                    setFocusSeconds(FOCUS_SECONDS);
-                  }}
-                  aria-label="Reset focus timer"
-                >
-                  <RefreshCw aria-hidden="true" />
-                </Button>
-              </div>
-            </article>
-
-            <article className="panel reset-card eight-ball-card" id="ask-saturn">
-              <div className="eight-ball-topline">
-                <div className="card-icon violet"><BrainCircuit aria-hidden="true" /></div>
-                <span className="ai-label"><Sparkles aria-hidden="true" /> Positive 8 Ball</span>
-              </div>
-              <div>
-                <p className="eyebrow">A little cosmic encouragement</p>
-                <h3>Ask Saturn</h3>
-              </div>
-              <div className="fortune-window" aria-live="polite">
-                <Orbit aria-hidden="true" />
-                <p>
-                  {asking
-                    ? "Reading the rings…"
-                    : fortune?.message ?? "Ask what’s on your mind. Saturn answers with a kind next step."}
-                </p>
-                {fortune ? (
-                  <small>{fortune.source === "ai" ? "AI-generated encouragement" : "Built-in encouragement"}</small>
-                ) : null}
-              </div>
-              <form className="fortune-form" onSubmit={submitQuestion}>
-                <label className="sr-only" htmlFor="saturn-question">Ask Saturn a question</label>
-                <Input
-                  id="saturn-question"
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="Will I make progress today?"
-                  maxLength={240}
-                  className="saturn-input"
-                />
-                <Button type="submit" className="violet-button" disabled={asking || !question.trim()}>
-                  <Sparkles aria-hidden="true" />
-                  Ask
-                </Button>
-              </form>
-              {fortuneError ? <p className="form-error" role="alert">{fortuneError}</p> : null}
-            </article>
-          </div>
+          <footer className="app-footer">
+            <span><Orbit aria-hidden="true" /> Saturn</span>
+            <p>Plan gently. Move steadily.</p>
+          </footer>
         </section>
-
-        <footer>
-          <span><Orbit aria-hidden="true" /> Saturn</span>
-          <p>Your plan is saved on this device.</p>
-        </footer>
       </div>
     </main>
   );

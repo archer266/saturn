@@ -4,7 +4,7 @@ Saturn is a weather-aware daily planner designed to help people organize their d
 
 ## Features
 
-- Daily planner with timed tasks, completion tracking, and device-local saving
+- Daily planner with AM/PM scheduling, completion tracking, and device-local saving
 - Live weather by current location or city search
 - Mood check-in saved on the current device
 - 25-minute focus timer
@@ -23,6 +23,17 @@ pnpm dev
 ```
 
 Open the local address shown in your terminal.
+
+### Windows / VS Code
+
+Open the `saturn` folder in VS Code, then open **Terminal → New Terminal** and run:
+
+```powershell
+pnpm.cmd install
+pnpm.cmd dev
+```
+
+Use `pnpm.cmd` on Windows if PowerShell says script execution is disabled. Stop the app with `Ctrl + C`.
 
 ## Connect the AI Magic 8 Ball
 
@@ -47,8 +58,8 @@ Never place an API key in client-side code or commit it to GitHub.
 
 ## Project structure
 
-- `app/page.tsx` — dashboard and interactions
-- `app/globals.css` — Saturn visual system and responsive layout
+- `app/page.tsx` — planner, 12-hour time controls, weather, mood, timers, and Magic 8 Ball interactions
+- `app/globals.css` — cosmic dashboard visual system and responsive layout
 - `app/api/affirmation/route.ts` — secure AI endpoint and fallback responses
 - `public/favicon.svg` — Saturn app icon
 
