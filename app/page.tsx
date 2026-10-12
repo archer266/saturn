@@ -29,6 +29,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -43,12 +44,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type Task = {
-  id: string;
-  title: string;
-  time: string;
-  completed: boolean;
-};
+import { type Task, to24Hour, normalizeTaskTime, sortTasks, parseTasks, remainingSeconds, weatherValues } from "@/lib/saturn";
+
+type Place = { name: string; latitude: number; longitude: number; admin1?: string; country?: string };
 
 type Weather = {
   location: string;
@@ -57,7 +55,8 @@ type Weather = {
   code: number;
   high: number;
   low: number;
-  precipitation: number;
+  precipitation: number | null;
+  updated: string;
   wind: number;
 };
 
@@ -83,27 +82,6 @@ type ModelContextLike = {
   ) => void | Promise<void>;
 };
 
-const DEFAULT_TASKS: Task[] = [
-  {
-    id: "saturn-starter-1",
-    title: "Choose one meaningful priority",
-    time: "09:00",
-    completed: false,
-  },
-  {
-    id: "saturn-starter-2",
-    title: "Take a five-minute reset",
-    time: "13:00",
-    completed: false,
-  },
-  {
-    id: "saturn-starter-3",
-    title: "Close the loop on one task",
-    time: "16:30",
-    completed: false,
-  },
-];
-
 const MOODS = [
   { emoji: "😌", label: "Calm" },
   { emoji: "🙂", label: "Good" },
@@ -128,23 +106,6 @@ function formatTimer(seconds: number) {
   return `${minutes}:${remainder.toString().padStart(2, "0")}`;
 }
 
-function to24Hour(hour: string, minute: string, period: string) {
-  const numericHour = Number(hour) % 12 + (period === "PM" ? 12 : 0);
-  return `${String(numericHour).padStart(2, "0")}:${minute}`;
-}
-
-function normalizeTaskTime(value: string) {
-  const cleaned = value.trim();
-  if (!cleaned) return "";
-
-  const twentyFourHour = cleaned.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
-  if (twentyFourHour) return cleaned;
-
-  const twelveHour = cleaned.match(/^(1[0-2]|[1-9]):([0-5]\d)\s*([AP]M)$/i);
-  if (!twelveHour) return "";
-  return to24Hour(twelveHour[1], twelveHour[2], twelveHour[3].toUpperCase());
-}
-
 function formatTaskTime(value: string) {
   const normalized = normalizeTaskTime(value);
   if (!normalized) return "Anytime";
@@ -153,15 +114,6 @@ function formatTaskTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-  });
-}
-
-function sortTasks(items: Task[]) {
-  return [...items].sort((a, b) => {
-    if (!a.time && !b.time) return 0;
-    if (!a.time) return 1;
-    if (!b.time) return -1;
-    return a.time.localeCompare(b.time);
   });
 }
 
@@ -194,6 +146,7 @@ async function requestFortune(question: string): Promise<Fortune> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
+    signal: AbortSignal.timeout(15000),
   });
 
   if (!response.ok) throw new Error("Saturn could not answer right now.");
@@ -201,22 +154,31 @@ async function requestFortune(question: string): Promise<Fortune> {
 }
 
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>(DEFAULT_TASKS);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskHour, setTaskHour] = useState("9");
   const [taskMinute, setTaskMinute] = useState("00");
   const [taskPeriod, setTaskPeriod] = useState("AM");
   const [hydrated, setHydrated] = useState(false);
+  const [storageError, setStorageError] = useState("");
+  const storageReady = useRef(false);
+  const [deletedTask, setDeletedTask] = useState<Task | null>(null);
   const [mood, setMood] = useState("");
 
   const [city, setCity] = useState("");
   const [weather, setWeather] = useState<Weather | null>(null);
   const [weatherStatus, setWeatherStatus] = useState("Use your location or search a city.");
   const [weatherLoading, setWeatherLoading] = useState(false);
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
+  const [weatherStale, setWeatherStale] = useState(false);
 
   const [focusSeconds, setFocusSeconds] = useState(FOCUS_SECONDS);
   const [focusRunning, setFocusRunning] = useState(false);
 
+  const focusDeadline = useRef(0);
+  const breathDeadline = useRef(0);
+  const [breathComplete, setBreathComplete] = useState(false);
   const [breathing, setBreathing] = useState(false);
   const [breathRemaining, setBreathRemaining] = useState(BREATH_SECONDS);
 
@@ -253,61 +215,62 @@ export default function Home() {
     updateDateAndTime();
     const clockInterval = window.setInterval(updateDateAndTime, 30_000);
 
-    try {
+    // Browser-only hydration intentionally happens after the server render.
+    const restore = () => { try {
       const savedTasks = localStorage.getItem("saturn.tasks");
       const savedMood = localStorage.getItem("saturn.mood");
-      if (savedTasks) setTasks(sortTasks(JSON.parse(savedTasks) as Task[]));
-      if (savedMood) setMood(savedMood);
+      if (savedTasks) setTasks(parseTasks(savedTasks));
+      if (savedMood && MOODS.some((item) => item.label === savedMood)) setMood(savedMood);
+      storageReady.current = true;
     } catch {
-      // The starter plan remains available if browser storage is unavailable.
+      setStorageError("Saved data could not be read. Your previous data is untouched; changes in this session may not survive closing Saturn.");
     } finally {
       setHydrated(true);
-    }
+    } };
+    restore();
 
     return () => window.clearInterval(clockInterval);
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem("saturn.tasks", JSON.stringify(tasks));
-  }, [hydrated, tasks]);
-
-  useEffect(() => {
-    if (!hydrated || !mood) return;
-    localStorage.setItem("saturn.mood", mood);
-  }, [hydrated, mood]);
+    if (!hydrated || !storageReady.current) return;
+    const persist = () => { try {
+      localStorage.setItem("saturn.tasks", JSON.stringify(tasks));
+      localStorage.setItem("saturn.mood", mood);
+      setStorageError("");
+    } catch {
+      setStorageError("Changes could not be saved on this device. Keep this tab open and free up browser storage before trying again.");
+    } };
+    persist();
+  }, [hydrated, tasks, mood]);
 
   useEffect(() => {
     if (!focusRunning) return;
-    const interval = window.setInterval(() => {
-      setFocusSeconds((current) => {
-        if (current <= 1) {
-          setFocusRunning(false);
-          return 0;
-        }
-        return current - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(interval);
+    const tick = () => {
+      const remaining = remainingSeconds(focusDeadline.current);
+      setFocusSeconds(remaining);
+      if (!remaining) setFocusRunning(false);
+    };
+    const interval = window.setInterval(tick, 250);
+    document.addEventListener("visibilitychange", tick);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", tick); };
   }, [focusRunning]);
 
   useEffect(() => {
     if (!breathing) return;
     const interval = window.setInterval(() => {
-      setBreathRemaining((current) => {
-        if (current <= 1) {
-          setBreathing(false);
-          return BREATH_SECONDS;
-        }
-        return current - 1;
-      });
-    }, 1000);
+      const remaining = remainingSeconds(breathDeadline.current);
+      setBreathRemaining(remaining);
+      if (!remaining) { setBreathing(false); setBreathComplete(true); }
+    }, 250);
     return () => window.clearInterval(interval);
   }, [breathing]);
 
   const loadWeather = useCallback(async (latitude: number, longitude: number, location: string) => {
     setWeatherLoading(true);
     setWeatherStatus("Checking the sky…");
+    setPlaces([]);
+    setSelectedPlace({ name: location, latitude, longitude });
     try {
       const params = new URLSearchParams({
         latitude: latitude.toString(),
@@ -319,34 +282,15 @@ export default function Home() {
         timezone: "auto",
         forecast_days: "1",
       });
-      const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+      const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error("Weather request failed");
-      const data = (await response.json()) as {
-        current: {
-          temperature_2m: number;
-          apparent_temperature: number;
-          weather_code: number;
-          wind_speed_10m: number;
-        };
-        daily: {
-          temperature_2m_max: number[];
-          temperature_2m_min: number[];
-          precipitation_probability_max: number[];
-        };
-      };
-      setWeather({
-        location,
-        temperature: Math.round(data.current.temperature_2m),
-        apparent: Math.round(data.current.apparent_temperature),
-        code: data.current.weather_code,
-        high: Math.round(data.daily.temperature_2m_max[0]),
-        low: Math.round(data.daily.temperature_2m_min[0]),
-        precipitation: Math.round(data.daily.precipitation_probability_max[0] ?? 0),
-        wind: Math.round(data.current.wind_speed_10m),
-      });
+      const values = weatherValues(await response.json());
+      setWeather({ location, ...values, updated: new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true }) });
+      setWeatherStale(false);
       setWeatherStatus("");
     } catch {
-      setWeatherStatus("Weather is taking a break. Try a city search.");
+      setWeatherStale(true);
+      setWeatherStatus("Weather is unavailable. Check your connection and refresh, or choose another city.");
     } finally {
       setWeatherLoading(false);
     }
@@ -363,9 +307,9 @@ export default function Home() {
       (position) => {
         void loadWeather(position.coords.latitude, position.coords.longitude, "Current location");
       },
-      () => {
+      (error) => {
         setWeatherLoading(false);
-        setWeatherStatus("Search a city to see today’s weather.");
+        setWeatherStatus(error.code === 1 ? "Location permission was denied. Search a city below instead." : "Your location could not be found. Search a city below instead.");
       },
       { timeout: 8000 },
     );
@@ -377,9 +321,11 @@ export default function Home() {
     if (!query) return;
     setWeatherLoading(true);
     setWeatherStatus("Finding that city…");
+    setPlaces([]);
     try {
       const response = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`,
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=5&language=en&format=json`,
+        { signal: AbortSignal.timeout(10000) },
       );
       if (!response.ok) throw new Error("City search failed");
       const data = (await response.json()) as {
@@ -391,15 +337,10 @@ export default function Home() {
           longitude: number;
         }>;
       };
-      const result = data.results?.[0];
-      if (!result) {
-        setWeatherStatus("That city didn’t show up. Try a nearby city.");
-        setWeatherLoading(false);
-        return;
-      }
-      const place = [result.name, result.admin1 ?? result.country].filter(Boolean).join(", ");
-      await loadWeather(result.latitude, result.longitude, place);
-      setCity("");
+      const results = (data.results ?? []).filter((place) => typeof place.name === "string" && Number.isFinite(place.latitude) && Number.isFinite(place.longitude));
+      setPlaces(results);
+      setWeatherStatus(results.length ? "Choose your location below." : "No matching cities. Check the spelling or try a nearby city.");
+      setWeatherLoading(false);
     } catch {
       setWeatherStatus("City search didn’t connect. Try again in a moment.");
       setWeatherLoading(false);
@@ -433,6 +374,7 @@ export default function Home() {
   };
 
   const removeTask = (id: string) => {
+    setDeletedTask(tasks.find((task) => task.id === id) ?? null);
     setTasks((current) => current.filter((task) => task.id !== id));
   };
 
@@ -445,10 +387,11 @@ export default function Home() {
       const answer = await requestFortune(cleaned.slice(0, 240));
       setFortune(answer);
       return answer;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Saturn could not answer right now.";
-      setFortuneError(message);
-      throw error;
+    } catch {
+      const answer: Fortune = { message: "Start with one small, kind step. You can find your way forward without knowing every answer.", source: "built-in" };
+      setFortune(answer);
+      setFortuneError("Saturn could not connect. Here is some offline encouragement instead.");
+      return answer;
     } finally {
       setAsking(false);
     }
@@ -553,8 +496,14 @@ export default function Home() {
 
   return (
     <main className="saturn-app">
+      <a className="skip-link" href="#today">Skip to daily plan</a>
       <div className="app-shell">
         <section className="main-stage">
+          <nav className="top-nav" aria-label="Main navigation">
+            <a className="brand" href="#"><span className="brand-mark"><Orbit aria-hidden="true" /></span><strong>Saturn<span> A little space for you.</span></strong></a>
+            <div><a href="#today">Daily plan</a><a href="#reset">Reset tools</a><a href="#ask-saturn">Ask Saturn</a></div>
+            <time className="nav-clock">{clockLabel}</time>
+          </nav>
           <header className="page-header">
             <div>
               <p className="eyebrow">Your space for today</p>
@@ -570,8 +519,9 @@ export default function Home() {
             </div>
           </header>
 
+          {storageError && <p className="storage-notice" role="alert">{storageError}</p>}
           <div className="overview-grid">
-            <section className="surface planner-surface" id="today" aria-labelledby="planner-heading">
+            <section className="surface planner-surface" tabIndex={-1} id="today" aria-labelledby="planner-heading">
               <div className="surface-heading planner-heading">
                 <div>
                   <p className="section-kicker">Daily plan</p>
@@ -594,20 +544,20 @@ export default function Home() {
 
                 <div className="time-picker" role="group" aria-label="Task time">
                   <span className="time-picker-icon"><Clock3 aria-hidden="true" /></span>
-                  <Select value={taskHour} onValueChange={(value) => value && setTaskHour(value)}>
+                  <Select name="task-hour" value={taskHour} onValueChange={(value) => value && setTaskHour(value)}>
                     <SelectTrigger className="time-select" aria-label="Hour"><SelectValue /></SelectTrigger>
                     <SelectContent className="saturn-select-menu">
                       {HOURS.map((hour) => <SelectItem key={hour} value={hour}>{hour}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   <span className="time-colon">:</span>
-                  <Select value={taskMinute} onValueChange={(value) => value && setTaskMinute(value)}>
+                  <Select name="task-minute" value={taskMinute} onValueChange={(value) => value && setTaskMinute(value)}>
                     <SelectTrigger className="time-select minute-select" aria-label="Minute"><SelectValue /></SelectTrigger>
                     <SelectContent className="saturn-select-menu">
                       {MINUTES.map((minute) => <SelectItem key={minute} value={minute}>{minute}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <Select value={taskPeriod} onValueChange={(value) => value && setTaskPeriod(value)}>
+                  <Select name="task-period" value={taskPeriod} onValueChange={(value) => value && setTaskPeriod(value)}>
                     <SelectTrigger className="time-select period-select" aria-label="AM or PM"><SelectValue /></SelectTrigger>
                     <SelectContent className="saturn-select-menu">
                       <SelectItem value="AM">AM</SelectItem>
@@ -616,17 +566,19 @@ export default function Home() {
                   </Select>
                 </div>
 
-                <Button type="submit" className="primary-button" disabled={!taskTitle.trim()}>
+                <Button type="submit" className="primary-button" disabled={!hydrated || !taskTitle.trim()}>
                   <Plus aria-hidden="true" />
                   Add task
                 </Button>
               </form>
 
+              <p className="save-status">{hydrated ? storageError ? "Session only · saving needs attention" : "Saved on this device · your plan stays until you clear it" : "Loading your saved plan…"}</p>
               <div className="list-meta">
                 <span>Schedule</span>
                 <span>{completedTasks}/{tasks.length} complete</span>
               </div>
 
+              <Progress value={tasks.length ? completedTasks / tasks.length * 100 : 0} aria-label="Daily plan completion" className="plan-progress" />
               <div className="task-list" aria-live="polite">
                 {tasks.length === 0 ? (
                   <div className="empty-plan">
@@ -662,6 +614,7 @@ export default function Home() {
                   ))
                 )}
               </div>
+              {deletedTask && <div className="undo-notice" role="status"><span>Removed “{deletedTask.title}”</span><button type="button" onClick={() => { setTasks((current) => sortTasks([...current, deletedTask])); setDeletedTask(null); }}>Undo</button></div>}
             </section>
 
             <aside className="dashboard-rail" aria-label="Weather and mood">
@@ -688,29 +641,31 @@ export default function Home() {
                     <div className="weather-hero">
                       <WeatherIcon code={weather.code} className="weather-icon" />
                       <div>
-                        <strong>{weather.temperature}°</strong>
+                        <strong>{weather.temperature}°<small>F</small></strong>
                         <span>{getWeatherLabel(weather.code)}</span>
                       </div>
                     </div>
                     <p className="weather-place"><MapPin aria-hidden="true" /> {weather.location}</p>
                     <div className="weather-metrics">
                       <div><span>High / Low</span><strong>{weather.high}° / {weather.low}°</strong></div>
-                      <div><span>Rain</span><strong>{weather.precipitation}%</strong></div>
+                      <div><span>Rain</span><strong>{weather.precipitation === null ? "Unavailable" : `${weather.precipitation}%`}</strong></div>
                       <div><span>Wind</span><strong>{weather.wind} mph</strong></div>
                     </div>
-                    <p className="feels-like">Feels like {weather.apparent}°</p>
+                    <p className="feels-like">Feels like {weather.apparent}°F · {weatherStale ? "Last successful update" : "Updated"} {weather.updated}</p>
                   </div>
                 ) : (
                   <div className="weather-placeholder">
                     <span><CloudSun aria-hidden="true" /></span>
-                    <p>{weatherStatus}</p>
+                    <h3>Your local outlook</h3><p>Search your city or share your location to see what the day has in store.</p>
                   </div>
                 )}
 
+                {selectedPlace && <button className="refresh-weather" disabled={weatherLoading} type="button" onClick={() => void loadWeather(selectedPlace.latitude, selectedPlace.longitude, selectedPlace.name)}><RefreshCw aria-hidden="true" />Refresh weather</button>}
                 <form className="city-search" onSubmit={searchWeather}>
                   <label className="sr-only" htmlFor="city">Search city</label>
                   <Input
                     id="city"
+                    maxLength={100}
                     value={city}
                     onChange={(event) => setCity(event.target.value)}
                     placeholder="Search a city"
@@ -726,7 +681,12 @@ export default function Home() {
                     {weatherLoading ? <RefreshCw className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />}
                   </Button>
                 </form>
-                {weather && weatherStatus ? <p className="inline-status">{weatherStatus}</p> : null}
+                <p className="inline-status" role="status">{weatherStatus}</p>
+                {places.length > 0 && <ul className="city-results" aria-label="Matching cities">{places.map((place) => {
+                  const name = [place.name, place.admin1, place.country].filter(Boolean).join(", ");
+                  return <li key={`${place.latitude}-${place.longitude}`}><button type="button" disabled={weatherLoading} onClick={() => { void loadWeather(place.latitude, place.longitude, name); setCity(""); }}><MapPin aria-hidden="true" />{name}</button></li>;
+                })}</ul>}
+                <a className="weather-credit" href="https://open-meteo.com/" target="_blank" rel="noreferrer">Weather data by Open-Meteo ↗</a>
               </section>
 
               <section className="surface mood-surface" id="mood-check" aria-labelledby="mood-heading">
@@ -744,6 +704,7 @@ export default function Home() {
                       key={item.label}
                       className={`mood-option${mood === item.label ? " selected" : ""}`}
                       onClick={() => setMood(item.label)}
+                      aria-label={item.label}
                       aria-pressed={mood === item.label}
                     >
                       <span>{item.emoji}</span>
@@ -774,12 +735,13 @@ export default function Home() {
                   <div><small>25-minute session</small><h3>Focus timer</h3></div>
                 </div>
                 <div className="focus-time">{formatTimer(focusSeconds)}</div>
-                <Progress value={focusProgress} className="focus-progress" />
+                <Progress value={focusProgress} className="focus-progress" aria-label="Focus session progress" />
+                <p className="timer-status" role="status">{focusSeconds === 0 ? "Session complete. Give yourself a moment to rest." : focusRunning ? "One thing at a time. You’ve got this." : "Make a little room for deep work."}</p>
                 <div className="tool-actions">
                   <Button
                     type="button"
                     className="primary-button"
-                    onClick={() => setFocusRunning((current) => !current)}
+                    onClick={() => { if (!focusRunning) focusDeadline.current = Date.now() + focusSeconds * 1000; else setFocusSeconds(remainingSeconds(focusDeadline.current)); setFocusRunning(!focusRunning); }}
                     disabled={focusSeconds === 0}
                   >
                     {focusRunning ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
@@ -812,20 +774,20 @@ export default function Home() {
                   <span className="tool-icon mint"><Wind aria-hidden="true" /></span>
                   <div><small>60-second reset</small><h3>Box breathing</h3></div>
                 </div>
-                <div className={`breath-visual ${breathing ? breathPhase.toLowerCase() : "idle"}`}>
+                <div aria-live="polite" className={`breath-visual ${breathing ? breathPhase.toLowerCase() : "idle"}`}>
                   <span className="breath-ring" aria-hidden="true" />
                   <span className="breath-core" aria-hidden="true" />
-                  <strong>{breathing ? breathPhase : "Ready"}</strong>
-                  <small>{breathing ? `${breathRemaining} seconds` : "4 · 4 · 4 · 4"}</small>
+                  <strong>{breathing ? breathPhase : breathComplete ? "Well done" : breathRemaining < BREATH_SECONDS ? "Paused" : "Ready"}</strong>
+                  <small aria-hidden="true">{breathing ? `${breathRemaining} seconds` : "4 · 4 · 4 · 4"}</small>
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   className="secondary-button"
-                  onClick={() => setBreathing((current) => !current)}
+                  onClick={() => { if (!breathing) { const seconds = breathRemaining || BREATH_SECONDS; setBreathRemaining(seconds); breathDeadline.current = Date.now() + seconds * 1000; setBreathComplete(false); } else setBreathRemaining(remainingSeconds(breathDeadline.current)); setBreathing(!breathing); }}
                 >
                   {breathing ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-                  {breathing ? "Pause" : breathRemaining < BREATH_SECONDS ? "Continue" : "Begin breathing"}
+                  {breathing ? "Pause breathing" : breathComplete ? "Breathe again" : breathRemaining < BREATH_SECONDS ? "Continue" : "Begin breathing"}
                 </Button>
               </article>
 
@@ -833,7 +795,6 @@ export default function Home() {
                 <div className="tool-card-heading fortune-heading">
                   <span className="tool-icon violet"><BrainCircuit aria-hidden="true" /></span>
                   <div><small>Positive Magic 8 Ball</small><h3>Ask Saturn</h3></div>
-                  <span className="ai-chip"><Sparkles aria-hidden="true" /> AI-ready</span>
                 </div>
 
                 <div className="fortune-window" aria-live="polite">
@@ -844,6 +805,7 @@ export default function Home() {
                   </div>
                 </div>
 
+                <p className="fortune-note">A playful nudge, not a prediction.</p>
                 <form className="fortune-form" onSubmit={submitQuestion}>
                   <label className="sr-only" htmlFor="saturn-question">Ask Saturn a question</label>
                   <Input

@@ -77,6 +77,7 @@ export async function POST(request: Request) {
   try {
     const apiResponse = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
+      signal: AbortSignal.timeout(12000),
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
