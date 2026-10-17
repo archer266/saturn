@@ -2,6 +2,12 @@
 
 Plan your day. Find your calm. Saturn combines weather, daily planning, mood check-ins, focus, breathing, and a positive Magic 8 Ball. Built with React 19, TypeScript, Vinext, and the existing Cloudflare Workers runtime. No desktop packaging exists.
 
+## UI Preview
+
+**Source-generated UI preview — not an actual application screenshot.** Reconstructed from the UI source, existing styles, and icons without launching the application. Shows the initial empty state before browser hydration, with placeholder date/time and no live weather or saved tasks.
+
+![Saturn main interface — source-generated UI preview](docs/screenshots/main-interface.png)
+
 ## Setup and launch
 
 Use Node.js 22.13+ and pnpm 11.25.0. Run from this repository's root:
